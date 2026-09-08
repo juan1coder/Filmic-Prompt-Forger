@@ -1,0 +1,6 @@
+{
+  "name": "Prompt Forge",
+  "description": "Creative workstation for transforming ideas into dense, visually coherent AI image prompts using native Gemini models (Flash 3.8, Fallback 3.6, 3.1 Pro), 3-level enhancement, custom alter ego personas, and tone presets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
