@@ -1,4 +1,4 @@
-import { VisionAttributes, EnhancementLevel } from '../types';
+import { VisionAttributes, EnhancementLevel, RecipeIngredient } from '../types';
 
 export interface GenerationParams {
   idea: string;
@@ -10,6 +10,10 @@ export interface GenerationParams {
   lightingMood: string;
   personaInstructions: string;
   wikiEnrichment?: string;
+  enrichmentSource?: 'Wikipedia' | 'Web Search' | 'Google Search';
+  enrichmentSnippets?: string[];
+  recipeIngredients?: RecipeIngredient[];
+  recipeSearchTerms?: string[];
   model?: string;
   enhancementLevel?: EnhancementLevel;
   injectedSnippets?: string[];
@@ -71,10 +75,13 @@ export function buildPromptStructure(params: {
   atmosphere?: string;
   filmGrain?: string;
   wikiEnrichment?: string;
+  enrichmentSource?: 'Wikipedia' | 'Web Search' | 'Google Search';
+  enrichmentSnippets?: string[];
   presetPrompt?: string;
   injectedSnippets?: string[];
   enhancementLevel?: EnhancementLevel;
   aspectRatio?: string;
+  recipeIngredients?: RecipeIngredient[];
 }): string {
   const {
     idea = '',
@@ -86,10 +93,13 @@ export function buildPromptStructure(params: {
     atmosphere = '',
     filmGrain = '',
     wikiEnrichment = '',
+    enrichmentSource,
+    enrichmentSnippets = [],
     presetPrompt = '',
     injectedSnippets = [],
     enhancementLevel = 2,
-    aspectRatio = '4:3'
+    aspectRatio = '4:3',
+    recipeIngredients = [],
   } = params;
 
   const arTag = aspectRatio.split(' ')[0] || '4:3';
@@ -153,6 +163,22 @@ export function buildPromptStructure(params: {
     }
   }
 
+  // 6b. Research & Cultural Snippets (Wikipedia / Web Search)
+  if (enrichmentSnippets && enrichmentSnippets.length > 0) {
+    const cleanSnippets = enrichmentSnippets.map((s) => s.trim().replace(/\.$/, '')).filter(Boolean);
+    if (cleanSnippets.length > 0) {
+      narrativeSegments.push(`enriched with ${cleanSnippets.join(', ')}`);
+    }
+  }
+
+  // 6c. Active Recipe Mortar Ingredients
+  if (recipeIngredients && recipeIngredients.length > 0) {
+    const mortarTexts = recipeIngredients.map((r) => r.snippet.trim().replace(/\.$/, '')).filter(Boolean);
+    if (mortarTexts.length > 0) {
+      narrativeSegments.push(`bonded with mortar elements: ${mortarTexts.join(', ')}`);
+    }
+  }
+
   // 7. Active Preset Film Emulsion Formulation
   if (presetPrompt) {
     narrativeSegments.push(presetPrompt);
@@ -189,6 +215,10 @@ export async function executePromptForge(params: GenerationParams): Promise<{
   modelUsed: string;
   fallbackOccurred?: boolean;
   fallbackReason?: string;
+  enrichmentSource?: string;
+  enrichmentSnippets?: string[];
+  recipeIngredients?: RecipeIngredient[];
+  recipeSearchTerms?: string[];
 }> {
   const {
     idea,
@@ -198,6 +228,10 @@ export async function executePromptForge(params: GenerationParams): Promise<{
     lightingMood,
     personaInstructions,
     wikiEnrichment,
+    enrichmentSource,
+    enrichmentSnippets = [],
+    recipeIngredients = [],
+    recipeSearchTerms = [],
     model = 'gemini-3.8-flash',
     enhancementLevel = 2,
     injectedSnippets = [],
@@ -206,36 +240,12 @@ export async function executePromptForge(params: GenerationParams): Promise<{
     imageFileName
   } = params;
 
-  // Resolve authentic vision attributes, replacing placeholder strings with actual Gemini Vision descriptions
+  // Resolve authentic vision attributes, replacing placeholder strings with actual descriptions
   let effectiveVisionAttrs: VisionAttributes = { ...imageAttributes };
 
   if (isPlaceholderSubject(effectiveVisionAttrs.subject)) {
-    if (imageBase64) {
-      try {
-        const freshVision = await analyzeImageWithVision(
-          imageBase64,
-          imageMimeType || 'image/jpeg',
-          imageFileName || 'reference.jpg'
-        );
-        if (freshVision && freshVision.subject && !isPlaceholderSubject(freshVision.subject)) {
-          effectiveVisionAttrs = {
-            subject: freshVision.subject,
-            composition: freshVision.composition || effectiveVisionAttrs.composition,
-            lighting: freshVision.lighting || effectiveVisionAttrs.lighting,
-            colorPalette: freshVision.colorPalette || effectiveVisionAttrs.colorPalette,
-            atmosphere: freshVision.atmosphere || effectiveVisionAttrs.atmosphere,
-            filmGrain: freshVision.filmGrain || effectiveVisionAttrs.filmGrain,
-          };
-        }
-      } catch (err) {
-        console.warn('On-demand vision analysis failed during prompt forge:', err);
-      }
-    }
-
-    // If still a placeholder, replace with a descriptive semantic sentence
-    if (isPlaceholderSubject(effectiveVisionAttrs.subject)) {
-      effectiveVisionAttrs.subject = resolveSemanticSubject(effectiveVisionAttrs.subject);
-    }
+    // Replace with a descriptive semantic sentence without burning background vision quota
+    effectiveVisionAttrs.subject = resolveSemanticSubject(effectiveVisionAttrs.subject);
   }
 
   // Clean remaining attribute placeholders
@@ -275,7 +285,10 @@ export async function executePromptForge(params: GenerationParams): Promise<{
         systemPersona: personaInstructions,
         injectedSnippets,
         visionAttributes: effectiveVisionAttrs,
-        image: imageBase64 ? { base64: imageBase64, mimeType: imageMimeType } : null
+        enrichmentSource,
+        enrichmentSnippets,
+        recipeIngredients,
+        recipeSearchTerms,
       })
     });
 
@@ -294,7 +307,11 @@ export async function executePromptForge(params: GenerationParams): Promise<{
           negative: data.negative || 'digital rendering, 3d cgi render, plastic skin, anime, oversaturated neon, chromatic aberration, cartoon, blurry, watermark, low quality',
           modelUsed: data.modelUsed || `${model} (Native)`,
           fallbackOccurred: data.fallbackOccurred,
-          fallbackReason: data.fallbackReason
+          fallbackReason: data.fallbackReason,
+          enrichmentSource: data.enrichmentSource || enrichmentSource,
+          enrichmentSnippets: data.enrichmentSnippets || enrichmentSnippets,
+          recipeIngredients: data.recipeIngredients || recipeIngredients,
+          recipeSearchTerms: data.recipeSearchTerms || recipeSearchTerms,
         };
       }
     }
@@ -314,6 +331,9 @@ export async function executePromptForge(params: GenerationParams): Promise<{
     atmosphere: effectiveVisionAttrs.atmosphere,
     filmGrain: effectiveVisionAttrs.filmGrain,
     wikiEnrichment,
+    enrichmentSource,
+    enrichmentSnippets,
+    recipeIngredients,
     presetPrompt,
     injectedSnippets,
     enhancementLevel,
@@ -326,7 +346,11 @@ export async function executePromptForge(params: GenerationParams): Promise<{
     positive,
     negative,
     modelUsed: 'Prompt Forge Analog Synthesis Engine (Client Fallback)',
-    fallbackOccurred: true
+    fallbackOccurred: true,
+    enrichmentSource,
+    enrichmentSnippets,
+    recipeIngredients,
+    recipeSearchTerms,
   };
 }
 

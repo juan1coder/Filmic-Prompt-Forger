@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Camera,
   Film,
-  Sparkles,
   Copy,
   Download,
   Terminal,
@@ -23,17 +22,30 @@ import {
   Plus,
   History,
   RotateCcw,
-  Clock
+  Clock,
+  Globe,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  FileText,
+  ArrowDownToLine,
+  Eraser,
+  Utensils,
+  Sparkles,
+  X
 } from 'lucide-react';
-import { VisionAttributes, SavedRecord, EnhancementLevel, Preset, ToneSnippet, SystemPersona, NativeModelOption, PromptHistoryItem } from './types';
+import { VisionAttributes, SavedRecord, EnhancementLevel, Preset, ToneSnippet, SystemPersona, NativeModelOption, PromptHistoryItem, SearchLogEntry, RecipeIngredient, CuratedSnippet } from './types';
 import { FILM_PRESETS, READY_TONE_SNIPPETS, NATIVE_GEMINI_MODELS, RANDOM_PROMPTS, SAMPLE_IMAGES } from './data/presets';
 import { SYSTEM_PERSONAS } from './data/personas';
 import { fetchWikipediaSummary } from './utils/wikipedia';
 import { executePromptForge, analyzeImageWithVision } from './utils/promptGenerator';
+import { searchWikiOrWeb, injectSnippetIntoSourcePrompt, SearchEnrichmentResult } from './utils/searchEnrichment';
 import { PythonScriptModal } from './components/PythonScriptModal';
 import { JournalModal } from './components/JournalModal';
 import { PresetManagerModal } from './components/PresetManagerModal';
 import { PersonaManagerModal } from './components/PersonaManagerModal';
+import { SearchRecipeModal } from './components/SearchRecipeModal';
 
 export default function App() {
   // Input Chamber
@@ -144,6 +156,44 @@ export default function App() {
   const [copiedHistoryId, setCopiedHistoryId] = useState<string | null>(null);
   const [revertedHistoryId, setRevertedHistoryId] = useState<string | null>(null);
 
+  // Cultural & Entity Search Enrichment State (Google Search Grounding & Wikipedia Snippets)
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchSource, setSearchSource] = useState<'Google Search' | 'Wikipedia' | 'Web Search'>('Google Search');
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [searchResults, setSearchResults] = useState<SearchEnrichmentResult | null>(null);
+  const [searchLogs, setSearchLogs] = useState<SearchLogEntry[]>(() => {
+    try {
+      const stored = localStorage.getItem('promptforge_search_logs');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [isSearchLogsOpen, setIsSearchLogsOpen] = useState<boolean>(false);
+  const [isSearchRecipeModalOpen, setIsSearchRecipeModalOpen] = useState<boolean>(false);
+  const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>(() => {
+    try {
+      const stored = localStorage.getItem('promptforge_recipe_ingredients');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [activeEnrichmentRecord, setActiveEnrichmentRecord] = useState<{
+    source: 'Google Search' | 'Wikipedia' | 'Web Search';
+    query: string;
+    snippets: string[];
+  } | null>(null);
+  const [copiedSnippetIdx, setCopiedSnippetIdx] = useState<number | null>(null);
+  const [copiedMatrix, setCopiedMatrix] = useState<'prompt' | 'metadata' | null>(null);
+  const [copiedSensorIdx, setCopiedSensorIdx] = useState<number | null>(null);
+  const [copiedSourcePrompt, setCopiedSourcePrompt] = useState<boolean>(false);
+  const [downloadedHistory, setDownloadedHistory] = useState<boolean>(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -153,6 +203,20 @@ export default function App() {
       localStorage.setItem('promptforge_history', JSON.stringify(promptHistory));
     } catch {}
   }, [promptHistory]);
+
+  // Persist search & enrichment logs in localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('promptforge_search_logs', JSON.stringify(searchLogs));
+    } catch {}
+  }, [searchLogs]);
+
+  // Persist recipe mortar ingredients in localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('promptforge_recipe_ingredients', JSON.stringify(recipeIngredients));
+    } catch {}
+  }, [recipeIngredients]);
 
   // Persist customized presets, snippets, and personas
   useEffect(() => {
@@ -230,20 +294,18 @@ export default function App() {
         mimeType: mime,
       });
 
-      // Show immediate scanning sensors state
+      // Default optical sensors ready for manual inspection or manual VL scan
+      const cleanFileName = file.name.replace(/\.[^/.]+$/, '');
       setVisionAttrs({
-        subject: 'Deconstructing visual subject with Gemini Vision (VL)...',
-        composition: 'Deconstructing camera angle, lens optics & depth of field...',
-        lighting: 'Analyzing lighting direction, shadows & color temperature...',
-        colorPalette: 'Analyzing emulsion dye couplers & tonal spectrum...',
-        atmosphere: 'Measuring ambient particles & emotional mood tone...',
-        filmGrain: 'Measuring 35mm silver halide grain density & halation...',
+        subject: `Analog photographic subject from "${cleanFileName}"`,
+        composition: 'Classic 35mm rangefinder framing with natural depth of field',
+        lighting: 'Natural warm directional light with soft ambient fill',
+        colorPalette: 'Rich analog tones with amber highlights and shadow richness',
+        atmosphere: 'Atmospheric nostalgia with tactile density',
+        filmGrain: 'Organic 35mm silver gelatin grain structure',
       });
 
-      updateStatus(`IMAGE ACTIVATED: ${file.name} (${sizeKb} KB). Gemini Vision deconstruction started...`);
-
-      // Automatically trigger VL deconstruction
-      triggerVisionDeconstruct(url, mime, file.name);
+      updateStatus(`IMAGE LOADED: ${file.name} (${sizeKb} KB). Click "Deconstruct with Gemini Vision" button to run optical scan.`);
     };
     reader.readAsDataURL(file);
   };
@@ -264,8 +326,7 @@ export default function App() {
       atmosphere: 'Tangible tactile 1970s analog nostalgia',
       filmGrain: 'Kodachrome 64 dye coupler dye clouds and fine grain',
     });
-    updateStatus(`IMAGE ACTIVATED: Sample ${sample.name} loaded. Deconstructing with Gemini Vision...`);
-    triggerVisionDeconstruct(sample.url, 'image/jpeg', sample.name);
+    updateStatus(`SAMPLE LOADED: ${sample.name}. Click "Deconstruct with Gemini Vision" button to run optical scan.`);
   };
 
   const detachImage = () => {
@@ -320,6 +381,194 @@ export default function App() {
   const handleClearHistory = () => {
     setPromptHistory([]);
     updateStatus('Prompt history array cleared.');
+  };
+
+  // Copy Source Idea Prompt to clipboard
+  const handleCopySourcePrompt = () => {
+    if (!sourcePrompt.trim()) return;
+    navigator.clipboard.writeText(sourcePrompt);
+    setCopiedSourcePrompt(true);
+    setTimeout(() => setCopiedSourcePrompt(false), 2000);
+    updateStatus('Source idea prompt copied to clipboard.');
+  };
+
+  // Erase Board Completely (Reset canvas and clear thoughts)
+  const handleEraseBoard = () => {
+    setSourcePrompt('');
+    setAttachedImage(null);
+    setVisionAttrs({
+      subject: '',
+      composition: 'Classic rule-of-thirds eye-level framing',
+      lighting: 'Warm directional golden hour light with gentle shadows',
+      colorPalette: 'Rich amber, ochre, muted cyan shadows',
+      atmosphere: 'Tangible tactile nostalgia, atmospheric air particles',
+      filmGrain: 'Fine organic 35mm silver gelatin grain structure',
+    });
+    setFinalPositive('');
+    setFinalNegative('digital rendering, 3d cgi render, plastic skin, anime, oversaturated neon, chromatic aberration, cartoon, blurry, watermark, low quality');
+    setSearchResults(null);
+    setActiveEnrichmentRecord(null);
+    setSearchQuery('');
+    updateStatus('Canvas erased. Workspace board completely cleared for fresh thoughts.');
+  };
+
+  // Download all Prompt History Logs as a formatted file
+  const handleDownloadHistoryLogs = () => {
+    if (promptHistory.length === 0) {
+      updateStatus('Prompt history is empty - generate prompts first.');
+      return;
+    }
+
+    const now = new Date();
+    const dateStamp = now.toISOString().replace(/[:.]/g, '-');
+    const header = [
+      '================================================================================',
+      '               PROMPT FORGE :: HISTORICAL GENERATIONS & AUDIT LOG               ',
+      '================================================================================',
+      `Export Timestamp : ${now.toISOString()} (${now.toLocaleString()})`,
+      `Total Records    : ${promptHistory.length}`,
+      `Application      : Vintage Analog Cinematography Prompt Studio`,
+      '================================================================================\n',
+    ].join('\n');
+
+    const entries = promptHistory.map((item, idx) => {
+      const parts = [
+        `--------------------------------------------------------------------------------`,
+        `RECORD #${String(idx + 1).padStart(3, '0')} | ID: ${item.id}`,
+        `TIMESTAMP : ${item.timestamp} | DATE: ${item.dateStr || 'N/A'}`,
+        `MODEL     : ${item.modelUsed || 'Gemini'}`,
+        `LEVEL     : Level ${item.enhancementLevel || 2}`,
+        `PRESET    : ${item.presetName || 'Default'}`,
+        item.sourceIdea ? `SOURCE IDEA: ${item.sourceIdea}` : null,
+        item.enrichmentSource ? `ENRICHMENT SOURCE : ${item.enrichmentSource}` : null,
+        item.enrichmentQuery ? `ENRICHMENT QUERY  : ${item.enrichmentQuery}` : null,
+        item.enrichmentSnippets && item.enrichmentSnippets.length > 0
+          ? `ENRICHMENT SNIPPETS:\n${item.enrichmentSnippets.map((s, i) => `  [${i + 1}] ${s}`).join('\n')}`
+          : null,
+        item.visionAttributes?.subject ? `OPTICAL SUBJECT : ${item.visionAttributes.subject}` : null,
+        item.visionAttributes?.composition ? `OPTICS & FRAMING: ${item.visionAttributes.composition}` : null,
+        item.visionAttributes?.lighting ? `LIGHTING        : ${item.visionAttributes.lighting}` : null,
+        item.visionAttributes?.colorPalette ? `COLOR PALETTE   : ${item.visionAttributes.colorPalette}` : null,
+        item.visionAttributes?.atmosphere ? `ATMOSPHERE      : ${item.visionAttributes.atmosphere}` : null,
+        item.visionAttributes?.filmGrain ? `FILM GRAIN      : ${item.visionAttributes.filmGrain}` : null,
+        `\n[POSITIVE PROMPT]:`,
+        item.positivePrompt,
+        `\n[NEGATIVE PROMPT]:`,
+        item.negativePrompt || 'N/A',
+        `--------------------------------------------------------------------------------\n`,
+      ];
+      return parts.filter(Boolean).join('\n');
+    }).join('\n');
+
+    const fullLog = `${header}\n${entries}`;
+    const blob = new Blob([fullLog], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `prompt_forge_history_log_${dateStamp}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setDownloadedHistory(true);
+    setTimeout(() => setDownloadedHistory(false), 2000);
+    updateStatus(`Downloaded prompt history logs (${promptHistory.length} records) as .txt`);
+  };
+
+  // Construct foundational image generation prompt from VL optical sensors
+  const getMatrixFoundationalPrompt = () => {
+    const parts = [
+      visionAttrs.subject,
+      visionAttrs.composition,
+      visionAttrs.lighting,
+      visionAttrs.colorPalette,
+      visionAttrs.atmosphere,
+      visionAttrs.filmGrain,
+    ]
+      .map((p) => (p || '').trim())
+      .filter(
+        (p) =>
+          p &&
+          !p.startsWith('Deconstructing') &&
+          !p.startsWith('Measuring') &&
+          !p.startsWith('Analyzing') &&
+          !p.startsWith('Visual subject from Local_')
+      );
+
+    if (parts.length === 0) {
+      return visionAttrs.subject || 'Detailed optical photograph, 35mm analog capture';
+    }
+    return parts.join(', ');
+  };
+
+  // Construct structured metadata key-value record
+  const getMatrixStructuredMetadata = () => {
+    return [
+      `--- VL OPTICAL DECONSTRUCTION MATRIX ---`,
+      attachedImage ? `REFERENCE_IMAGE: ${attachedImage.name}` : null,
+      `1. SUBJECT: ${visionAttrs.subject || 'N/A'}`,
+      `2. COMPOSITION: ${visionAttrs.composition || 'N/A'}`,
+      `3. LIGHTING: ${visionAttrs.lighting || 'N/A'}`,
+      `4. COLOR_PALETTE: ${visionAttrs.colorPalette || 'N/A'}`,
+      `5. ATMOSPHERE: ${visionAttrs.atmosphere || 'N/A'}`,
+      `6. FILM_GRAIN: ${visionAttrs.filmGrain || 'N/A'}`,
+      `----------------------------------------`,
+      `FOUNDATIONAL_PROMPT:`,
+      getMatrixFoundationalPrompt(),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
+
+  // Copy matrix as foundational image prompt
+  const handleCopyMatrixPrompt = () => {
+    const text = getMatrixFoundationalPrompt();
+    navigator.clipboard.writeText(text);
+    setCopiedMatrix('prompt');
+    setTimeout(() => setCopiedMatrix(null), 2000);
+    updateStatus('VL optical matrix copied as foundational image prompt.');
+  };
+
+  // Copy matrix as raw key-value metadata
+  const handleCopyMatrixMetadata = () => {
+    const text = getMatrixStructuredMetadata();
+    navigator.clipboard.writeText(text);
+    setCopiedMatrix('metadata');
+    setTimeout(() => setCopiedMatrix(null), 2000);
+    updateStatus('VL optical deconstruction metadata copied to clipboard.');
+  };
+
+  // Inject or set matrix foundational prompt into source prompt textarea
+  const handleApplyMatrixToSourcePrompt = () => {
+    const text = getMatrixFoundationalPrompt();
+    setSourcePrompt((prev) => {
+      const trimmed = prev.trim();
+      if (!trimmed) return text;
+      return `${trimmed}\n\n[Foundational Visual Baseline]: ${text}`;
+    });
+    updateStatus('VL optical metadata applied to Source Idea Prompt as foundational baseline.');
+  };
+
+  // Copy an individual sensor
+  const handleCopySensor = (text: string, idx: number, label: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedSensorIdx(idx);
+    setTimeout(() => setCopiedSensorIdx(null), 1500);
+    updateStatus(`Copied ${label}: "${text.slice(0, 45)}..."`);
+  };
+
+  // Append individual sensor to source prompt
+  const handleAppendSensorToPrompt = (text: string, label: string) => {
+    if (!text) return;
+    setSourcePrompt((prev) => {
+      const trimmed = prev.trim();
+      if (!trimmed) return text;
+      if (trimmed.includes(text)) return trimmed;
+      return `${trimmed}, ${text}`;
+    });
+    updateStatus(`Injected ${label} into source prompt.`);
   };
 
   // Drag & Drop Handlers on Source Textarea
@@ -390,24 +639,230 @@ export default function App() {
     updateStatus('Loaded random analog creative scenario.');
   };
 
-  // Wikipedia Enrichment
-  const handleWikiEnrich = async () => {
-    if (!sourcePrompt.trim()) {
-      updateStatus('Enter a subject or concept into the prompt box first (e.g. "Oni mask", "Brutalism").');
+  // Wikipedia / Google Web Search Enrichment & Mortar Snippet Extraction
+  const handleSearchEnrich = async (
+    overrideQuery?: string,
+    overrideSource?: 'Google Search' | 'Wikipedia' | 'Web Search'
+  ) => {
+    const targetSource = overrideSource || searchSource;
+    const rawQuery = (overrideQuery !== undefined ? overrideQuery : searchQuery).trim();
+
+    // Fallback to the first entity from sourcePrompt if query is empty
+    const query = rawQuery || (sourcePrompt.trim() ? sourcePrompt.trim().split(/[,;.]/)[0].trim() : '');
+
+    if (!query) {
+      updateStatus('Please type a search query (e.g. "Pop Art", "Surrealism", "Witchcraft", "Oni") to enrich your prompt.');
       return;
     }
-    updateStatus(`Querying Wikipedia for cultural context...`);
-    const wiki = await fetchWikipediaSummary(sourcePrompt);
-    if (wiki) {
-      setVisionAttrs((prev) => ({
-        ...prev,
-        subject: prev.subject ? `${prev.subject} (${wiki.title})` : wiki.title,
-        atmosphere: `${prev.atmosphere} — Context: ${wiki.extract.slice(0, 140)}...`,
-      }));
-      updateStatus(`Wikipedia enriched: "${wiki.title}" context added to vision attributes.`);
-    } else {
-      updateStatus(`No direct Wikipedia match found for query.`);
+
+    setSearchQuery(query);
+    setIsSearching(true);
+    updateStatus(`Querying ${targetSource} for "${query}" mortar ingredients to enrich prompt...`);
+
+    try {
+      const res = await searchWikiOrWeb(query, targetSource);
+      setSearchResults(res);
+
+      // Create an audit log entry tracking this search event and snippets discovered
+      const newLog: SearchLogEntry = {
+        id: `slog_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        timestamp: new Date().toISOString(),
+        timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        query,
+        source: targetSource,
+        snippets: res.snippets,
+        injectedSnippets: [],
+        finalPromptUpdated: false,
+      };
+
+      setSearchLogs((prev) => [newLog, ...prev.filter((l) => !(l.query.toLowerCase() === query.toLowerCase() && l.source === targetSource))].slice(0, 50));
+
+      updateStatus(
+        `Discovered ${res.snippets.length} ${targetSource} mortar snippets for "${query}". Ready to induct into prompt recipe.`
+      );
+    } catch (err: any) {
+      updateStatus(`Search error: ${err?.message || 'Failed to retrieve enrichment snippets'}`);
+    } finally {
+      setIsSearching(false);
     }
+  };
+
+  // Inject a single extracted snippet into the source prompt text box and active recipe ledger
+  const handleInjectSearchSnippet = (
+    snippetText: string,
+    overrideTerm?: string,
+    overrideCategory?: string,
+    overrideWorthyReason?: string
+  ) => {
+    if (!snippetText) return;
+
+    setSourcePrompt((prev) => injectSnippetIntoSourcePrompt(prev, snippetText));
+
+    const currentSource = searchResults?.source || searchSource;
+    const currentQuery = overrideTerm || searchResults?.query || searchQuery || 'Search Entity';
+
+    // Find if we have curated categorization from search results
+    const matchingCurated = searchResults?.curatedSnippets?.find((c) => c.text === snippetText);
+    const category = overrideCategory || matchingCurated?.category || 'Iconography & Subject';
+    const worthyReason =
+      overrideWorthyReason ||
+      matchingCurated?.worthyReason ||
+      'Adds concrete physical detail and binds the prompt wall seamlessly';
+
+    // Register into active recipe ingredients ledger
+    setRecipeIngredients((prev) => {
+      if (prev.some((ing) => ing.snippet.trim().toLowerCase() === snippetText.trim().toLowerCase())) {
+        return prev;
+      }
+      const newIng: RecipeIngredient = {
+        id: `rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        searchTerm: currentQuery,
+        snippet: snippetText.trim(),
+        category,
+        worthyReason,
+        source: currentSource,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      return [...prev, newIng];
+    });
+
+    // Track active enrichment record to be sent during forge and logged
+    setActiveEnrichmentRecord((prev) => {
+      const existingSnippets = prev?.snippets || [];
+      if (!existingSnippets.includes(snippetText)) {
+        return {
+          source: currentSource,
+          query: currentQuery,
+          snippets: [...existingSnippets, snippetText],
+        };
+      }
+      return prev;
+    });
+
+    // Update matching entry in searchLogs to mark snippet as injected
+    setSearchLogs((prev) =>
+      prev.map((log) => {
+        if (log.query.toLowerCase() === currentQuery.toLowerCase()) {
+          const updatedInjected = log.injectedSnippets.includes(snippetText)
+            ? log.injectedSnippets
+            : [...log.injectedSnippets, snippetText];
+          return { ...log, injectedSnippets: updatedInjected };
+        }
+        return log;
+      })
+    );
+
+    updateStatus(
+      `[MORTAR INDUCTED] Added "${snippetText.slice(0, 48)}..." into prompt & active recipe ledger.`
+    );
+  };
+
+  // Inject all discovered snippets into the source prompt text box & recipe ledger
+  const handleInjectAllSearchSnippets = () => {
+    if (!searchResults || searchResults.snippets.length === 0) return;
+
+    let updated = sourcePrompt;
+    for (const s of searchResults.snippets) {
+      updated = injectSnippetIntoSourcePrompt(updated, s);
+    }
+    setSourcePrompt(updated);
+
+    // Induct all into recipe ingredients
+    setRecipeIngredients((prev) => {
+      const existingTexts = new Set(prev.map((ing) => ing.snippet.trim().toLowerCase()));
+      const newIngredients: RecipeIngredient[] = [];
+
+      searchResults.snippets.forEach((snip, idx) => {
+        if (!existingTexts.has(snip.trim().toLowerCase())) {
+          const curated = searchResults.curatedSnippets?.find((c) => c.text === snip);
+          newIngredients.push({
+            id: `rec_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+            searchTerm: searchResults.query,
+            snippet: snip.trim(),
+            category: curated?.category || (idx === 0 ? 'Iconography & Subject' : idx === 1 ? 'Texture & Material' : 'Atmosphere & Tone'),
+            worthyReason: curated?.worthyReason || 'Provides foundational structural mortar for prompt synthesis',
+            source: searchResults.source,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          });
+        }
+      });
+
+      return [...prev, ...newIngredients];
+    });
+
+    setActiveEnrichmentRecord({
+      source: searchResults.source,
+      query: searchResults.query,
+      snippets: searchResults.snippets,
+    });
+
+    setSearchLogs((prev) =>
+      prev.map((log) => {
+        if (log.query.toLowerCase() === searchResults.query.toLowerCase()) {
+          return { ...log, injectedSnippets: searchResults.snippets };
+        }
+        return log;
+      })
+    );
+
+    updateStatus(
+      `[${searchResults.source.toUpperCase()} ALL INDUCTED] Injected all ${searchResults.snippets.length} mortar ingredients for "${searchResults.query}" into prompt and recipe ledger.`
+    );
+  };
+
+  // Remove an ingredient from the recipe ledger
+  const handleRemoveIngredient = (id: string) => {
+    const ing = recipeIngredients.find((r) => r.id === id);
+    if (!ing) return;
+
+    setRecipeIngredients((prev) => prev.filter((r) => r.id !== id));
+
+    setActiveEnrichmentRecord((prev) => {
+      if (!prev) return null;
+      const updated = prev.snippets.filter((s) => s !== ing.snippet);
+      if (updated.length === 0) return null;
+      return { ...prev, snippets: updated };
+    });
+
+    updateStatus(`Removed ingredient "${ing.snippet.slice(0, 30)}..." from recipe.`);
+  };
+
+  // Clear all recipe ingredients
+  const handleClearIngredients = () => {
+    setRecipeIngredients([]);
+    setActiveEnrichmentRecord(null);
+    updateStatus('Cleared all active recipe mortar ingredients.');
+  };
+
+  const handleCopySnippetText = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedSnippetIdx(idx);
+    setTimeout(() => setCopiedSnippetIdx(null), 1500);
+    updateStatus('Snippet copied to clipboard.');
+  };
+
+  const handleClearSearch = () => {
+    setSearchResults(null);
+    setSearchQuery('');
+    updateStatus('Enrichment search chamber cleared.');
+  };
+
+  const handleClearSearchLogs = () => {
+    setSearchLogs([]);
+    try {
+      localStorage.removeItem('promptforge_search_logs');
+    } catch {}
+    updateStatus('Search & enrichment audit logs cleared.');
+  };
+
+  // Legacy quick Wikipedia enrichment
+  const handleWikiEnrich = async () => {
+    const q = sourcePrompt.trim().split(/[,;.]/)[0].trim() || searchQuery.trim();
+    if (!q) {
+      updateStatus('Enter a subject or concept into the prompt box or search bar first (e.g. "Pop Art", "Surrealism").');
+      return;
+    }
+    await handleSearchEnrich(q, 'Wikipedia');
   };
 
   // Inject a tone snippet into the user's prompt
@@ -441,26 +896,12 @@ export default function App() {
         : 'Level 2 (Balanced Cinematic)';
     updateStatus(`Forging prompt via ${selectedModel} at ${levelLabel} with alter ego "${activePersona.name}"...`);
 
-    // Ensure vision attributes are fully deconstructed if an image is attached
-    let currentVisionAttrs = visionAttrs;
-    if (
-      attachedImage &&
-      (isAnalyzingVision ||
-        !currentVisionAttrs.subject ||
-        currentVisionAttrs.subject.startsWith('Deconstructing visual') ||
-        currentVisionAttrs.subject.startsWith('Visual subject from') ||
-        currentVisionAttrs.subject.includes('Local_'))
-    ) {
-      updateStatus(`Awaiting Gemini Vision deconstruction of "${attachedImage.name}" before forging...`);
-      const freshAttrs = await triggerVisionDeconstruct(
-        attachedImage.url,
-        attachedImage.mimeType || 'image/jpeg',
-        attachedImage.name
-      );
-      if (freshAttrs) {
-        currentVisionAttrs = freshAttrs;
-      }
-    }
+    // Prompt synthesis uses active text and sensor parameters; no auto-VL execution in background
+    const currentVisionAttrs = visionAttrs;
+
+    const uniqueSearchTerms: string[] = Array.from(
+      new Set(recipeIngredients.map((r) => r.searchTerm).filter((t): t is string => Boolean(t)))
+    );
 
     try {
       const result = await executePromptForge({
@@ -474,14 +915,16 @@ export default function App() {
         personaInstructions: activePersona.instructions,
         model: selectedModel,
         enhancementLevel,
-        imageBase64: attachedImage?.base64,
-        imageMimeType: attachedImage?.mimeType,
+        enrichmentSource: activeEnrichmentRecord?.source || (recipeIngredients.length > 0 ? recipeIngredients[0].source : undefined),
+        enrichmentSnippets: activeEnrichmentRecord?.snippets || recipeIngredients.map((r) => r.snippet),
+        recipeIngredients,
+        recipeSearchTerms: uniqueSearchTerms,
       });
 
       setFinalPositive(result.positive);
       setFinalNegative(result.negative);
 
-      // Track into promptHistory state array (User requested: stored in a new state array)
+      // Track into promptHistory state array with enrichment & recipe metadata logged
       const historyItem: PromptHistoryItem = {
         id: `ph_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         positivePrompt: result.positive,
@@ -492,11 +935,45 @@ export default function App() {
         enhancementLevel,
         presetName: activePreset?.name || selectedPresetId,
         sourceIdea: sourcePrompt ? sourcePrompt.slice(0, 80) : (attachedImage ? `Ref: ${attachedImage.name}` : 'Synthesized prompt'),
+        enrichmentSource: activeEnrichmentRecord?.source || (recipeIngredients.length > 0 ? recipeIngredients[0].source : undefined),
+        enrichmentQuery: activeEnrichmentRecord?.query || (uniqueSearchTerms.length > 0 ? uniqueSearchTerms.join(', ') : undefined),
+        enrichmentSnippets: activeEnrichmentRecord?.snippets || recipeIngredients.map((r) => r.snippet),
+        recipeIngredients,
+        recipeSearchTerms: uniqueSearchTerms,
       };
       setPromptHistory((prev) => [historyItem, ...prev.filter((p) => p.positivePrompt !== result.positive)].slice(0, 50));
 
-      const fallbackNote = result.fallbackOccurred ? ' [Fallback Engaged]' : '';
-      updateStatus(`Prompt forged successfully via ${result.modelUsed}${fallbackNote}. Logged in Prompt History.`);
+      // Mark the search log entry as applied into the final prompt
+      if (activeEnrichmentRecord) {
+        setSearchLogs((prev) =>
+          prev.map((l) =>
+            l.query.toLowerCase() === activeEnrichmentRecord.query.toLowerCase()
+              ? { ...l, finalPromptUpdated: true }
+              : l
+          )
+        );
+      }
+
+      // Log the event explicitly mentioning if wiki or web search was used in the prompt process
+      if (recipeIngredients.length > 0) {
+        const snippetListString = recipeIngredients
+          .slice(0, 3)
+          .map((s, idx) => `[${idx + 1}] "${s.snippet.slice(0, 40)}..."`)
+          .join(' ');
+        updateStatus(
+          `[RECIPE MORTAR BONDED] Synthesized with ${recipeIngredients.length} ingredients from [${uniqueSearchTerms.join(', ')}]: ${snippetListString}`
+        );
+      } else if (activeEnrichmentRecord && activeEnrichmentRecord.snippets.length > 0) {
+        const snippetListString = activeEnrichmentRecord.snippets
+          .map((s, idx) => `[${idx + 1}] "${s.slice(0, 45)}..."`)
+          .join(' ');
+        updateStatus(
+          `[${activeEnrichmentRecord.source.toUpperCase()} LOGGED] Prompt process enriched via ${activeEnrichmentRecord.source} for "${activeEnrichmentRecord.query}" with ${activeEnrichmentRecord.snippets.length} snippets: ${snippetListString}`
+        );
+      } else {
+        const fallbackNote = result.fallbackOccurred ? ' [Fallback Engaged]' : '';
+        updateStatus(`Prompt forged successfully via ${result.modelUsed}${fallbackNote}. Logged in Prompt History.`);
+      }
     } catch {
       updateStatus('Error synthesizing prompt.');
     } finally {
@@ -533,6 +1010,15 @@ export default function App() {
     const recordId = Math.floor(10000 + Math.random() * 90000);
     const filename = `${recordId}_${dayName}_${monthName}_${dayNum}_${year}_${timeStr}.txt`;
 
+    let enrichmentSection = '';
+    if (activeEnrichmentRecord && activeEnrichmentRecord.snippets.length > 0) {
+      enrichmentSection = `ENRICHMENT_SOURCE: ${activeEnrichmentRecord.source}
+ENRICHMENT_QUERY: ${activeEnrichmentRecord.query}
+ENRICHMENT_SNIPPETS (${activeEnrichmentRecord.snippets.length}):
+${activeEnrichmentRecord.snippets.map((s, idx) => `  [${idx + 1}] ${s}`).join('\n')}
+`;
+    }
+
     const rawGrepContent = `--- PROMPT FORGE RECORD ---
 ID: ${recordId}
 TIMESTAMP: ${now.toISOString()}
@@ -542,7 +1028,7 @@ PRESET: ${activePreset?.name || selectedPresetId}
 ALTER_EGO: ${activePersona?.name} (${activePersona?.title})
 ASPECT: ${aspectRatio}
 IMAGE_REF: ${attachedImage ? attachedImage.name : 'NONE'}
----------------------------
+${enrichmentSection}---------------------------
 POSITIVE_PROMPT:
 ${finalPositive}
 
@@ -563,6 +1049,9 @@ ${finalNegative}
       positivePrompt: finalPositive,
       negativePrompt: finalNegative,
       rawGrepContent,
+      enrichmentSource: activeEnrichmentRecord?.source,
+      enrichmentQuery: activeEnrichmentRecord?.query,
+      enrichmentSnippets: activeEnrichmentRecord?.snippets,
     };
 
     const updated = [newRecord, ...savedRecords].slice(0, 50);
@@ -698,8 +1187,15 @@ ${finalNegative}
               <select
                 value={selectedModel}
                 onChange={(e) => {
-                  setSelectedModel(e.target.value);
-                  updateStatus(`Engine switched to ${e.target.value}`);
+                  const val = e.target.value;
+                  setSelectedModel(val);
+                  if (val.includes('pro')) {
+                    updateStatus(`Engine switched to Gemini 3.1 Pro. (Notice: Requires paid API key with Pay-as-you-go billing; Free Tier has 0 quota for Pro).`);
+                  } else if (val.includes('3.8')) {
+                    updateStatus(`Engine switched to Gemini 3.8 Flash (Default Flagship Engine).`);
+                  } else {
+                    updateStatus(`Engine switched to ${val}`);
+                  }
                 }}
                 className="bg-transparent text-[#f59e0b] font-bold outline-none cursor-pointer text-xs"
               >
@@ -742,6 +1238,16 @@ ${finalNegative}
               <span>Journal ({savedRecords.length})</span>
             </button>
 
+            {/* Erase Board Master Button */}
+            <button
+              onClick={handleEraseBoard}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#251816] hover:bg-[#381f1b] text-[#ea580c] hover:text-[#f97316] border border-[#522922] hover:border-[#ea580c] rounded transition font-bold"
+              title="Erase the board completely and clear your thoughts (reset workspace)"
+            >
+              <Eraser size={13} />
+              <span className="hidden sm:inline">Erase Board</span>
+            </button>
+
             {/* Debian Script Button */}
             <button
               onClick={() => setIsPythonModalOpen(true)}
@@ -759,7 +1265,7 @@ ${finalNegative}
       <div className="bg-[#1c1917] border-b border-[#332e29] px-4 md:px-6 py-2">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 font-mono text-xs overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-2 shrink-0">
-            <Sparkles size={13} className="text-[#ea580c]" />
+            <Film size={13} className="text-[#ea580c]" />
             <span className="text-[#a89f91] text-[11px] font-bold">READY TONE SNIPPETS:</span>
           </div>
 
@@ -798,7 +1304,7 @@ ${finalNegative}
           <div className="bg-[#24211e] border border-[#3a3530] rounded-lg p-4 flex flex-col shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-mono font-bold text-[#f59e0b] tracking-wide flex items-center gap-1.5">
-                <Sparkles size={14} />
+                <Camera size={14} className="text-[#f59e0b]" />
                 <span>USER'S IDEA / SOURCE PROMPT</span>
               </label>
               <span className="text-[10px] font-mono text-[#84cc16] bg-[#181615] px-2 py-0.5 rounded border border-[#332e29]">
@@ -840,7 +1346,7 @@ ${finalNegative}
 
             {/* Action buttons under text box */}
             <div className="flex flex-wrap items-center justify-between gap-2 mt-3 font-mono text-xs">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleSurpriseMe}
                   className="flex items-center gap-1 px-2.5 py-1.5 bg-[#181615] hover:bg-[#28241f] text-[#ece7dc] border border-[#3a3530] rounded font-bold transition"
@@ -858,21 +1364,493 @@ ${finalNegative}
                   <BookOpen size={13} />
                   <span>Wikipedia Enrich</span>
                 </button>
+
+                <button
+                  onClick={handleCopySourcePrompt}
+                  disabled={!sourcePrompt.trim()}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded font-bold border transition disabled:opacity-40 ${
+                    copiedSourcePrompt
+                      ? 'bg-[#1e2b19] border-[#84cc16] text-[#84cc16]'
+                      : 'bg-[#181615] hover:bg-[#28241f] text-[#ece7dc] border-[#3a3530]'
+                  }`}
+                  title="Copy source idea prompt text"
+                >
+                  {copiedSourcePrompt ? <Check size={13} className="text-[#84cc16]" /> : <Copy size={13} />}
+                  <span>{copiedSourcePrompt ? 'Copied Source!' : 'Copy Source'}</span>
+                </button>
               </div>
 
-              {sourcePrompt && (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    setSourcePrompt('');
-                    updateStatus('Idea prompt cleared.');
-                  }}
-                  className="flex items-center gap-1 text-[#a89f91] hover:text-[#ea580c] px-2 py-1 transition"
-                  title="Clear Prompt"
+                  onClick={handleEraseBoard}
+                  className="flex items-center gap-1 text-[#a89f91] hover:text-[#ea580c] px-2 py-1 transition border border-[#3a3530] hover:border-[#ea580c]/50 rounded bg-[#181615]"
+                  title="Erase the board completely and clear your thoughts"
                 >
-                  <Trash2 size={13} />
-                  <span>Clear</span>
+                  <Eraser size={13} className="text-[#ea580c]" />
+                  <span>Erase Board</span>
                 </button>
+
+                {sourcePrompt && (
+                  <button
+                    onClick={() => {
+                      setSourcePrompt('');
+                      updateStatus('Idea prompt cleared.');
+                    }}
+                    className="flex items-center gap-1 text-[#a89f91] hover:text-[#ea580c] px-2 py-1 transition"
+                    title="Clear Prompt Text"
+                  >
+                    <Trash2 size={13} />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* CULTURAL & RESEARCH ENRICHMENT (GOOGLE SEARCH GROUNDING & RECIPE MORTAR) */}
+            <div className="mt-4 pt-3 border-t border-[#332e29] flex flex-col gap-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#f59e0b]">
+                  <Search size={14} />
+                  <span>RESEARCH ENRICHMENT & RECIPE MORTAR</span>
+                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-[#162536] text-[#38bdf8] border border-[#1e3a5f]">
+                    Live Grounding
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSearchRecipeModalOpen(true)}
+                    className={`px-2.5 py-1 rounded text-xs font-mono font-bold flex items-center gap-1.5 border transition cursor-pointer ${
+                      recipeIngredients.length > 0
+                        ? 'bg-[#291f13] border-[#f59e0b] text-[#f59e0b] hover:bg-[#3d2f1d]'
+                        : 'bg-[#181615] border-[#3a3530] text-[#a89f91] hover:text-[#ece7dc]'
+                    }`}
+                    title="Open full prompt recipe ledger, ingredients breakdown, and search audit logs"
+                  >
+                    <Utensils size={12} className={recipeIngredients.length > 0 ? 'text-[#f59e0b]' : 'text-[#a89f91]'} />
+                    <span>Recipe Ledger ({recipeIngredients.length})</span>
+                  </button>
+
+                  {activeEnrichmentRecord && (
+                    <span className="text-[10px] font-mono text-[#84cc16] bg-[#1a2215] px-2 py-0.5 rounded border border-[#2f3d26]">
+                      ● ACTIVE: {activeEnrichmentRecord.source.toUpperCase()}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* ACTIVE PROMPT RECIPE MORTAR BANNER (WHEN INGREDIENTS EXIST) */}
+              {recipeIngredients.length > 0 && (
+                <div className="bg-[#181512] border border-[#3e3223] rounded-md p-3 flex flex-col gap-2 shadow-inner">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#f59e0b]">
+                      <Utensils size={13} />
+                      <span>ACTIVE PROMPT RECIPE ({recipeIngredients.length} MORTAR INGREDIENT{recipeIngredients.length === 1 ? '' : 'S'} BONDED)</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsSearchRecipeModalOpen(true)}
+                        className="text-[10px] font-mono text-[#84cc16] hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>Audit Ledger</span>
+                        <ExternalLink size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearIngredients}
+                        className="text-[10px] font-mono text-[#6e675e] hover:text-[#ea580c] transition cursor-pointer"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] font-mono text-[#a89f91] leading-relaxed">
+                    Like mortar in a stone wall, these ingredients bind the rough edges of your prompt and fortify its physical nuances.
+                  </p>
+
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {recipeIngredients.map((ing) => (
+                      <div
+                        key={ing.id}
+                        className="bg-[#12100e] border border-[#382f23] rounded px-2 py-1 text-[11px] font-mono flex items-center gap-1.5 group hover:border-[#f59e0b]/60 transition"
+                      >
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-[#241c14] text-[#f59e0b] border border-[#3d2e1c]">
+                          {ing.searchTerm}
+                        </span>
+                        <span className="text-[#ece7dc] truncate max-w-[200px]" title={ing.snippet}>
+                          {ing.snippet}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveIngredient(ing.id)}
+                          className="text-[#6e675e] hover:text-[#ea580c] transition ml-0.5"
+                          title="Remove from recipe"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
+
+              {/* Search Input Bar + Dedicated Engine Switcher (Full Width & Spacious) */}
+              <div className="flex flex-col gap-2">
+                {/* Engine Source Selection Row */}
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-mono text-[#8c8273] uppercase font-bold tracking-wider">Engine:</span>
+                    <button
+                      type="button"
+                      onClick={() => setSearchSource('Google Search')}
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-bold flex items-center gap-1.5 border transition cursor-pointer ${
+                        searchSource === 'Google Search'
+                          ? 'bg-[#162536] border-[#38bdf8] text-[#38bdf8] shadow-sm'
+                          : 'bg-[#181615] border-[#3a3530] text-[#a89f91] hover:text-[#ece7dc]'
+                      }`}
+                      title="Live Google Search grounding to extract fresh semantic snippets on the fly"
+                    >
+                      <Globe size={12} />
+                      <span>Google Search</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSearchSource('Wikipedia')}
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-bold flex items-center gap-1.5 border transition cursor-pointer ${
+                        searchSource === 'Wikipedia'
+                          ? 'bg-[#1b2615] border-[#84cc16] text-[#84cc16]'
+                          : 'bg-[#181615] border-[#3a3530] text-[#a89f91] hover:text-[#ece7dc]'
+                      }`}
+                      title="Search Wikipedia REST API for cultural/historical encyclopedia facts"
+                    >
+                      <BookOpen size={12} />
+                      <span>Wiki</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSearchSource('Web Search')}
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-bold flex items-center gap-1.5 border transition cursor-pointer ${
+                        searchSource === 'Web Search'
+                          ? 'bg-[#291f15] border-[#f59e0b] text-[#f59e0b]'
+                          : 'bg-[#181615] border-[#3a3530] text-[#a89f91] hover:text-[#ece7dc]'
+                      }`}
+                      title="Search Web Knowledge & Imagery Descriptors via Gemini Search"
+                    >
+                      <Sparkles size={12} />
+                      <span>Web Descriptors</span>
+                    </button>
+                  </div>
+
+                  <span className="text-[10px] font-mono text-[#6e675e] hidden sm:inline-block">
+                    Press <kbd className="px-1.5 py-0.5 rounded bg-[#1c1917] border border-[#332e29] text-[#a89f91]">Enter ↵</kbd>
+                  </span>
+                </div>
+
+                {/* Dedicated Full-Width Spacious Search Box with Search Action Button */}
+                <div className="relative w-full flex items-center gap-2">
+                  <div className="relative flex-1 min-w-0">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#f59e0b] pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSearchEnrich();
+                        }
+                      }}
+                      placeholder='Type any motif or topic (e.g. "Pop Art", "Surrealism", "Witchcraft", "Oni")...'
+                      className="w-full bg-[#12100e] text-xs sm:text-sm font-mono text-[#ece7dc] pl-9.5 pr-8 py-2.5 rounded-md border border-[#3e3428] focus:border-[#f59e0b] focus:ring-1 focus:ring-[#f59e0b]/30 outline-none placeholder:text-[#6e675e] shadow-inner transition"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#6e675e] hover:text-[#ece7dc] transition rounded cursor-pointer"
+                        title="Clear search input"
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSearchEnrich()}
+                    disabled={isSearching}
+                    className="shrink-0 px-4 py-2.5 bg-[#f59e0b] hover:bg-[#fbbf24] text-[#141211] rounded-md text-xs sm:text-sm font-mono font-bold transition flex items-center gap-2 disabled:opacity-50 cursor-pointer shadow"
+                  >
+                    {isSearching ? <RefreshCw size={13} className="animate-spin" /> : <Search size={13} />}
+                    <span>{isSearching ? 'Searching...' : 'Search'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Suggestion Chips for Fast Searching */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono text-[#a89f91]">
+                <span className="text-[#6e675e]">Try searching:</span>
+                {['Pop Art', 'Surrealism', 'Witchcraft', 'Oni Folklore', 'Brutalism', 'Chiaroscuro Noir', '1970s Darkroom', 'Art Nouveau'].map((term) => (
+                  <button
+                    key={term}
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery(term);
+                      handleSearchEnrich(term);
+                    }}
+                    className="px-2 py-0.5 bg-[#181615] hover:bg-[#26221c] text-[#ece7dc] hover:text-[#f59e0b] border border-[#332e29] hover:border-[#f59e0b]/50 rounded transition cursor-pointer"
+                  >
+                    "{term}"
+                  </button>
+                ))}
+              </div>
+
+              {/* Extracted Search Snippets Card (when results exist) */}
+              {searchResults && searchResults.snippets.length > 0 && (
+                <div className="mt-1 bg-[#171513] border border-[#3a3530] rounded p-3 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between border-b border-[#282420] pb-2 flex-wrap gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                        searchResults.source === 'Google Search'
+                          ? 'bg-[#162536] border-[#38bdf8] text-[#38bdf8]'
+                          : searchResults.source === 'Wikipedia'
+                          ? 'bg-[#1b2615] border-[#84cc16] text-[#84cc16]'
+                          : 'bg-[#291f15] border-[#f59e0b] text-[#f59e0b]'
+                      }`}>
+                        {searchResults.source.toUpperCase()}
+                      </span>
+                      <span className="text-xs font-mono font-bold text-[#ece7dc]">
+                        "{searchResults.query}"
+                      </span>
+                      <span className="text-[10px] text-[#a89f91] font-mono">
+                        ({searchResults.snippets.length} mortar snippet{searchResults.snippets.length === 1 ? '' : 's'})
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleInjectAllSearchSnippets}
+                        className="px-2 py-1 bg-[#222b1c] hover:bg-[#2e3c25] border border-[#84cc16] text-[#84cc16] text-[10px] font-mono font-bold rounded flex items-center gap-1 transition cursor-pointer"
+                        title="Inject all discovered snippets into the source prompt and recipe ledger"
+                      >
+                        <Plus size={11} />
+                        <span>Inject All into Recipe</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearSearch}
+                        className="p-1 text-[#6e675e] hover:text-[#ea580c] transition cursor-pointer"
+                        title="Dismiss search results"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Summary if available */}
+                  {searchResults.summary && (
+                    <div className="bg-[#12100e] border border-[#2b251f] rounded p-2 text-[11px] font-mono text-[#c9c2b5] leading-relaxed">
+                      <span className="text-[#f59e0b] font-bold mr-1">Summary:</span>
+                      {searchResults.summary}
+                    </div>
+                  )}
+
+                  {/* Curated Snippet Items with Mortar Worthiness Badges */}
+                  <div className="space-y-2">
+                    {searchResults.snippets.map((snip, idx) => {
+                      const isInPrompt = sourcePrompt.includes(snip.trim());
+                      const isIngInRecipe = recipeIngredients.some(
+                        (r) => r.snippet.trim().toLowerCase() === snip.trim().toLowerCase()
+                      );
+                      const curated = searchResults.curatedSnippets?.find((c) => c.text === snip);
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-2.5 rounded border transition flex flex-col gap-1.5 ${
+                            isInPrompt || isIngInRecipe
+                              ? 'bg-[#182014] border-[#344528]'
+                              : 'bg-[#12100e] border-[#29241f] hover:border-[#403932]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[10px] font-mono flex-wrap gap-1">
+                            <div className="flex items-center gap-1.5">
+                              {curated?.category && (
+                                <span className="px-1.5 py-0.2 rounded bg-[#201c18] border border-[#3d3326] text-[#f59e0b] font-bold">
+                                  {curated.category}
+                                </span>
+                              )}
+                              <span className="text-[#a89f91] font-bold">MORTAR #{idx + 1}</span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {isInPrompt && isIngInRecipe ? (
+                                <span className="text-[#84cc16] flex items-center gap-1 font-bold">
+                                  <Check size={11} />
+                                  <span>In Recipe & Prompt</span>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleInjectSearchSnippet(snip, searchResults.query, curated?.category, curated?.worthyReason)}
+                                  className="px-2 py-0.5 bg-[#261f17] hover:bg-[#3d2f21] border border-[#f59e0b] text-[#f59e0b] rounded font-bold transition flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Plus size={10} />
+                                  <span>Add into Recipe & Prompt</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleCopySnippetText(snip, idx)}
+                                className="p-1 text-[#6e675e] hover:text-[#ece7dc] transition cursor-pointer"
+                                title="Copy snippet text"
+                              >
+                                {copiedSnippetIdx === idx ? <Check size={11} className="text-[#84cc16]" /> : <Copy size={11} />}
+                              </button>
+                            </div>
+                          </div>
+
+                          <p className="text-xs font-mono text-[#ece7dc] leading-relaxed select-all">
+                            "{snip}"
+                          </p>
+
+                          {curated?.worthyReason && (
+                            <div className="text-[10px] font-mono text-[#a89f91] bg-[#171412] px-2 py-1 rounded border border-[#26201b] flex items-center gap-1">
+                              <span className="text-[#84cc16] font-bold">💡 Mortar Value:</span>
+                              <span>{curated.worthyReason}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Grounding Sources Links (if any) */}
+                  {searchResults.groundingSources && searchResults.groundingSources.length > 0 && (
+                    <div className="pt-1 border-t border-[#26211c] flex flex-wrap items-center gap-2 text-[10px] font-mono text-[#6e675e]">
+                      <span>Grounding sources:</span>
+                      {searchResults.groundingSources.map((source, sIdx) => (
+                        <a
+                          key={sIdx}
+                          href={source.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[#38bdf8] hover:underline flex items-center gap-0.5"
+                        >
+                          <span>{source.title}</span>
+                          <ExternalLink size={9} />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Audit Log Ledger Toggle & Drawer */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsSearchLogsOpen(!isSearchLogsOpen)}
+                  className="flex items-center justify-between w-full text-[11px] font-mono text-[#a89f91] hover:text-[#ece7dc] py-1 border-t border-[#292521] transition cursor-pointer"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <History size={12} className="text-[#f59e0b]" />
+                    <span>Search & Enrichment Audit Log ({searchLogs.length} events recorded)</span>
+                  </span>
+                  {isSearchLogsOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
+
+                {isSearchLogsOpen && (
+                  <div className="mt-2 bg-[#12100e] border border-[#2e2924] rounded p-3 space-y-2.5 max-h-60 overflow-y-auto">
+                    <div className="flex items-center justify-between text-[10px] font-mono text-[#6e675e] border-b border-[#24201c] pb-1.5 flex-wrap gap-1">
+                      <span>EVENT LEDGER (SEARCH & MORTAR INGREDIENTS)</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsSearchRecipeModalOpen(true)}
+                          className="text-[#f59e0b] hover:underline cursor-pointer"
+                        >
+                          View Recipe Ledger
+                        </button>
+                        {searchLogs.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleClearSearchLogs}
+                            className="hover:text-[#ea580c] transition cursor-pointer"
+                          >
+                            Clear Audit Log
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {searchLogs.length === 0 ? (
+                      <p className="text-[11px] font-mono text-[#6e675e] text-center py-2">
+                        No search events recorded yet. Type a motif like "Pop Art" or "Surrealism" above and click Search!
+                      </p>
+                    ) : (
+                      searchLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="p-2 bg-[#171513] border border-[#29241f] rounded text-xs font-mono flex flex-col gap-1.5"
+                        >
+                          <div className="flex items-center justify-between text-[10px] flex-wrap gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`px-1.5 py-0.5 rounded font-bold border ${
+                                log.source === 'Google Search'
+                                  ? 'bg-[#162536] border-[#38bdf8] text-[#38bdf8]'
+                                  : log.source === 'Wikipedia'
+                                  ? 'bg-[#1b2615] border-[#84cc16] text-[#84cc16]'
+                                  : 'bg-[#291f15] border-[#f59e0b] text-[#f59e0b]'
+                              }`}>
+                                {log.source.toUpperCase()}
+                              </span>
+                              <span className="text-[#ece7dc] font-bold">"{log.query}"</span>
+                              <span className="text-[#6e675e]">{log.timeStr}</span>
+                            </div>
+                            <span className="text-[9px] text-[#a89f91]">
+                              {log.snippets.length} snippet{log.snippets.length === 1 ? '' : 's'} logged
+                            </span>
+                          </div>
+
+                          {/* List of snippet results in the log */}
+                          <div className="space-y-1 pl-1 border-l border-[#2e2924]">
+                            {log.snippets.map((snip, sIdx) => {
+                              const alreadyIn = sourcePrompt.includes(snip.trim());
+                              return (
+                                <div key={sIdx} className="text-[11px] text-[#c9c2b5] flex items-start justify-between gap-2">
+                                  <span className="leading-snug">
+                                    <span className="text-[#f59e0b] mr-1">[{sIdx + 1}]</span>
+                                    {snip}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleInjectSearchSnippet(snip, log.query)}
+                                    className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition cursor-pointer ${
+                                      alreadyIn
+                                        ? 'border-[#84cc16] text-[#84cc16] bg-[#1a2215]'
+                                        : 'border-[#3a3530] text-[#f59e0b] hover:bg-[#261f17]'
+                                    }`}
+                                  >
+                                    {alreadyIn ? 'In Prompt' : '+ Induct'}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -938,10 +1916,11 @@ ${finalNegative}
                         handleAnalyzeVision();
                       }}
                       disabled={isAnalyzingVision}
-                      className="mt-2 flex items-center gap-1.5 px-2.5 py-1 bg-[#1e2819] hover:bg-[#2b3c22] text-[#84cc16] border border-[#374c2c] rounded text-[10px] font-bold transition disabled:opacity-50"
+                      className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-[#1e2819] hover:bg-[#2b3c22] text-[#84cc16] border border-[#374c2c] rounded text-[11px] font-bold transition disabled:opacity-50 cursor-pointer shadow-sm"
+                      title="Manually trigger Gemini Vision (VL) deconstruction on this reference image"
                     >
-                      <Sparkles size={11} className={isAnalyzingVision ? 'animate-spin' : ''} />
-                      <span>{isAnalyzingVision ? 'Analyzing...' : 'Auto-Analyze with Gemini Vision'}</span>
+                      <Camera size={13} className={isAnalyzingVision ? 'animate-spin' : ''} />
+                      <span>{isAnalyzingVision ? 'Scanning Optics...' : 'Deconstruct with Gemini Vision (VL Scan)'}</span>
                     </button>
                   </div>
                 </div>
@@ -1004,28 +1983,102 @@ ${finalNegative}
 
             {/* VISION ATTRIBUTES DECONSTRUCTION */}
             <div className="mt-4 pt-3 border-t border-[#332e29] space-y-2 font-mono text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[#a89f91] font-bold text-[11px] flex items-center gap-1.5">
-                  <Eye size={13} className="text-[#84cc16]" />
-                  <span>VL OPTICAL DECONSTRUCTION MATRIX:</span>
-                </span>
-                {isAnalyzingVision ? (
-                  <span className="text-[10px] text-[#f59e0b] bg-[#282112] px-2 py-0.5 rounded border border-[#f59e0b]/40 animate-pulse flex items-center gap-1">
-                    <Sparkles size={10} className="animate-spin" />
-                    <span>SCANNING OPTICS...</span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[#a89f91] font-bold text-[11px] flex items-center gap-1.5">
+                    <Eye size={13} className="text-[#84cc16]" />
+                    <span>VL OPTICAL DECONSTRUCTION MATRIX:</span>
                   </span>
-                ) : (
-                  <span className="text-[10px] text-[#6e675e]">6 EDITABLE SENSORS</span>
-                )}
+                  {isAnalyzingVision && (
+                    <span className="text-[10px] text-[#f59e0b] bg-[#282112] px-2 py-0.5 rounded border border-[#f59e0b]/40 animate-pulse flex items-center gap-1">
+                      <Camera size={10} className="animate-spin" />
+                      <span>SCANNING OPTICS...</span>
+                    </span>
+                  )}
+                </div>
+
+                {/* Quick Action Matrix Copy Buttons */}
+                <div className="flex items-center flex-wrap gap-1.5">
+                  {attachedImage && !isAnalyzingVision && (
+                    <button
+                      type="button"
+                      onClick={handleAnalyzeVision}
+                      className="px-2 py-1 bg-[#1e2819] hover:bg-[#2b3c22] text-[#84cc16] border border-[#374c2c] rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                      title="Run Gemini Vision optical deconstruction scan"
+                    >
+                      <Camera size={11} />
+                      <span>Scan Image</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCopyMatrixPrompt}
+                    className={`px-2 py-1 rounded text-[10px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                      copiedMatrix === 'prompt'
+                        ? 'bg-[#1e2b19] border-[#84cc16] text-[#84cc16]'
+                        : 'bg-[#181615] hover:bg-[#25201b] border-[#3a3530] text-[#f59e0b]'
+                    }`}
+                    title="Copy all detected optical sensors assembled as a foundational image prompt"
+                  >
+                    {copiedMatrix === 'prompt' ? <Check size={11} className="text-[#84cc16]" /> : <Copy size={11} />}
+                    <span>{copiedMatrix === 'prompt' ? 'Copied Prompt!' : 'Copy Matrix Prompt'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyMatrixMetadata}
+                    className={`px-2 py-1 rounded text-[10px] font-bold border transition flex items-center gap-1 cursor-pointer ${
+                      copiedMatrix === 'metadata'
+                        ? 'bg-[#1e2b19] border-[#84cc16] text-[#84cc16]'
+                        : 'bg-[#181615] hover:bg-[#25201b] border-[#3a3530] text-[#ece7dc]'
+                    }`}
+                    title="Copy structured optical sensor metadata (Subject, Optics, Lighting, Palette, Atmosphere, Grain)"
+                  >
+                    {copiedMatrix === 'metadata' ? <Check size={11} className="text-[#84cc16]" /> : <FileText size={11} />}
+                    <span>{copiedMatrix === 'metadata' ? 'Copied Metadata!' : 'Copy Metadata'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleApplyMatrixToSourcePrompt}
+                    className="px-2 py-1 bg-[#181615] hover:bg-[#25201b] border border-[#3a3530] text-[#84cc16] hover:border-[#84cc16] rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                    title="Use this optical metadata directly as foundational baseline in the Source Idea Prompt box"
+                  >
+                    <ArrowDownToLine size={11} />
+                    <span>→ Use as Prompt</span>
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-2.5 bg-[#141211] p-3 rounded border border-[#332e29] text-[11px]">
                 {/* Subject */}
                 <div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[#f59e0b] font-bold">1. Subject & Semantic Concept:</span>
-                    {visionAttrs.subject && !visionAttrs.subject.startsWith('Deconstructing') && (
-                      <span className="text-[9px] text-[#84cc16]">✓ VL EXTRACTED</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[#f59e0b] font-bold">1. Subject & Semantic Concept:</span>
+                      {visionAttrs.subject && !visionAttrs.subject.startsWith('Deconstructing') && (
+                        <span className="text-[9px] text-[#84cc16]">✓ VL EXTRACTED</span>
+                      )}
+                    </div>
+                    {visionAttrs.subject && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.subject, 'Subject')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#84cc16] px-1 py-0.5 rounded hover:bg-[#1f2918] transition cursor-pointer"
+                          title="Append subject to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.subject, 1, 'Subject')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Subject"
+                        >
+                          {copiedSensorIdx === 1 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
                     )}
                   </div>
                   <input
@@ -1039,7 +2092,29 @@ ${finalNegative}
 
                 {/* Composition */}
                 <div>
-                  <span className="text-[#38bdf8] font-bold">2. Composition & Optics:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#38bdf8] font-bold">2. Composition & Optics:</span>
+                    {visionAttrs.composition && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.composition, 'Composition')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#38bdf8] px-1 py-0.5 rounded hover:bg-[#18232e] transition cursor-pointer"
+                          title="Append composition to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.composition, 2, 'Composition')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Composition"
+                        >
+                          {copiedSensorIdx === 2 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={visionAttrs.composition}
@@ -1051,7 +2126,29 @@ ${finalNegative}
 
                 {/* Lighting */}
                 <div>
-                  <span className="text-[#84cc16] font-bold">3. Lighting & Shadows:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#84cc16] font-bold">3. Lighting & Shadows:</span>
+                    {visionAttrs.lighting && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.lighting, 'Lighting')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#84cc16] px-1 py-0.5 rounded hover:bg-[#1f2918] transition cursor-pointer"
+                          title="Append lighting to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.lighting, 3, 'Lighting')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Lighting"
+                        >
+                          {copiedSensorIdx === 3 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={visionAttrs.lighting}
@@ -1063,7 +2160,29 @@ ${finalNegative}
 
                 {/* Color Palette */}
                 <div>
-                  <span className="text-[#fb923c] font-bold">4. Color Palette & Emulsion Dyes:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#fb923c] font-bold">4. Color Palette & Emulsion Dyes:</span>
+                    {visionAttrs.colorPalette && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.colorPalette, 'Color Palette')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#fb923c] px-1 py-0.5 rounded hover:bg-[#281e18] transition cursor-pointer"
+                          title="Append color palette to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.colorPalette, 4, 'Color Palette')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Color Palette"
+                        >
+                          {copiedSensorIdx === 4 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={visionAttrs.colorPalette}
@@ -1075,7 +2194,29 @@ ${finalNegative}
 
                 {/* Atmosphere */}
                 <div>
-                  <span className="text-[#a78bfa] font-bold">5. Atmosphere & Mood Tone:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#a78bfa] font-bold">5. Atmosphere & Mood Tone:</span>
+                    {visionAttrs.atmosphere && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.atmosphere, 'Atmosphere')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#a78bfa] px-1 py-0.5 rounded hover:bg-[#251e2e] transition cursor-pointer"
+                          title="Append atmosphere to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.atmosphere, 5, 'Atmosphere')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Atmosphere"
+                        >
+                          {copiedSensorIdx === 5 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={visionAttrs.atmosphere}
@@ -1087,7 +2228,29 @@ ${finalNegative}
 
                 {/* Grain & Film Texture */}
                 <div>
-                  <span className="text-[#a89f91] font-bold">6. Film Grain & Emulsion:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#a89f91] font-bold">6. Film Grain & Emulsion:</span>
+                    {visionAttrs.filmGrain && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleAppendSensorToPrompt(visionAttrs.filmGrain, 'Film Grain')}
+                          className="text-[9px] text-[#a89f91] hover:text-[#ece7dc] px-1 py-0.5 rounded hover:bg-[#26221d] transition cursor-pointer"
+                          title="Append film grain to source prompt"
+                        >
+                          + Prompt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySensor(visionAttrs.filmGrain, 6, 'Film Grain')}
+                          className="text-[#6e675e] hover:text-[#ece7dc] p-0.5 transition cursor-pointer"
+                          title="Copy Film Grain"
+                        >
+                          {copiedSensorIdx === 6 ? <Check size={10} className="text-[#84cc16]" /> : <Copy size={10} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={visionAttrs.filmGrain}
@@ -1325,9 +2488,9 @@ ${finalNegative}
             <button
               onClick={handleForge}
               disabled={isForging}
-              className="mt-5 w-full py-3 bg-[#ea580c] hover:bg-[#f97316] text-[#141211] font-mono font-bold text-sm tracking-wider rounded border border-[#ff7824] shadow-md hover:shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50"
+              className="mt-5 w-full py-3 bg-[#ea580c] hover:bg-[#f97316] text-[#141211] font-mono font-bold text-sm tracking-wider rounded border border-[#ff7824] shadow-md hover:shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
             >
-              <Sparkles size={16} className={isForging ? 'animate-spin' : ''} />
+              <Camera size={16} className={isForging ? 'animate-spin' : ''} />
               <span>
                 {isForging
                   ? `SYNTHESIZING WITH ${selectedModel.toUpperCase()}...`
@@ -1417,16 +2580,32 @@ ${finalNegative}
                   {promptHistory.length} SAVED GENERATION{promptHistory.length === 1 ? '' : 'S'}
                 </span>
               </div>
-              {promptHistory.length > 0 && (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={handleClearHistory}
-                  className="text-[11px] text-[#a89f91] hover:text-[#ea580c] transition flex items-center gap-1"
-                  title="Clear prompt history array"
+                  onClick={handleDownloadHistoryLogs}
+                  disabled={promptHistory.length === 0}
+                  className={`text-[11px] font-bold px-2.5 py-1 rounded border transition flex items-center gap-1.5 ${
+                    downloadedHistory
+                      ? 'bg-[#1e2b19] border-[#84cc16] text-[#84cc16]'
+                      : 'bg-[#181615] hover:bg-[#25201b] border-[#3a3530] text-[#84cc16]'
+                  } disabled:opacity-40 cursor-pointer`}
+                  title="Download complete historical generation archive as a formatted .txt log file"
                 >
-                  <Trash2 size={12} />
-                  <span>Clear History</span>
+                  {downloadedHistory ? <Check size={12} className="text-[#84cc16]" /> : <Download size={12} />}
+                  <span>{downloadedHistory ? 'Downloaded!' : 'Download History'}</span>
                 </button>
-              )}
+
+                {promptHistory.length > 0 && (
+                  <button
+                    onClick={handleClearHistory}
+                    className="text-[11px] text-[#a89f91] hover:text-[#ea580c] transition flex items-center gap-1 cursor-pointer"
+                    title="Clear prompt history array"
+                  >
+                    <Trash2 size={12} />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {promptHistory.length === 0 ? (
@@ -1511,6 +2690,57 @@ ${finalNegative}
                       </p>
                     )}
 
+                    {item.enrichmentSource && (
+                      <div className="text-[10px] font-mono bg-[#182014] text-[#84cc16] border border-[#2b3a23] p-1.5 rounded flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold flex items-center gap-1">
+                            {item.enrichmentSource === 'Wikipedia' ? <BookOpen size={10} /> : <Globe size={10} />}
+                            <span>ENRICHED VIA {item.enrichmentSource.toUpperCase()}: "{item.enrichmentQuery || 'Entity'}"</span>
+                          </span>
+                          <span className="text-[9px] text-[#a89f91]">
+                            {item.enrichmentSnippets?.length || 1} SNIPPET{(item.enrichmentSnippets?.length || 1) === 1 ? '' : 'S'}
+                          </span>
+                        </div>
+                        {item.enrichmentSnippets && item.enrichmentSnippets.length > 0 && (
+                          <div className="text-[9px] text-[#ece7dc]/80 pl-1 space-y-0.5 border-l border-[#2b3a23]">
+                            {item.enrichmentSnippets.map((snip, sIdx) => (
+                              <div key={sIdx} className="truncate" title={snip}>
+                                • {snip}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {item.recipeIngredients && item.recipeIngredients.length > 0 && (
+                      <div className="text-[10px] font-mono bg-[#1c1810] text-[#f59e0b] border border-[#3e3119] p-1.5 rounded flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold flex items-center gap-1">
+                            <Utensils size={10} className="text-[#f59e0b]" />
+                            <span>RECIPE MORTAR: {item.recipeIngredients.length} INGREDIENTS BONDED</span>
+                          </span>
+                          {item.recipeSearchTerms && (
+                            <span className="text-[9px] text-[#a89f91]">
+                              Terms: {item.recipeSearchTerms.join(', ')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[9px] text-[#ece7dc]/80 pl-1 space-y-0.5 border-l border-[#3e3119]">
+                          {item.recipeIngredients.slice(0, 4).map((ing) => (
+                            <div key={ing.id} className="truncate" title={ing.snippet}>
+                              • <span className="text-[#f59e0b]">[{ing.searchTerm}]</span> {ing.snippet}
+                            </div>
+                          ))}
+                          {item.recipeIngredients.length > 4 && (
+                            <div className="text-[#6e675e]">
+                              + {item.recipeIngredients.length - 4} more ingredients in recipe
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <p className="text-[#ece7dc] text-[11px] leading-relaxed bg-[#191715] p-2 rounded border border-[#282420] select-all font-mono line-clamp-3 hover:line-clamp-none transition-all">
                       {item.positivePrompt}
                     </p>
@@ -1566,6 +2796,16 @@ ${finalNegative}
         onSelectPersona={(id) => setSelectedPersonaId(id)}
         onSavePersona={handleSavePersona}
         onDeletePersona={handleDeletePersona}
+      />
+      <SearchRecipeModal
+        isOpen={isSearchRecipeModalOpen}
+        onClose={() => setIsSearchRecipeModalOpen(false)}
+        searchLogs={searchLogs}
+        recipeIngredients={recipeIngredients}
+        onClearLogs={handleClearSearchLogs}
+        onRemoveIngredient={handleRemoveIngredient}
+        onClearIngredients={handleClearIngredients}
+        onInjectSnippet={(text, term, category, worthyReason) => handleInjectSearchSnippet(text, term, category, worthyReason)}
       />
     </div>
   );

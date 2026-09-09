@@ -85,10 +85,18 @@ export const JournalModal: React.FC<JournalModalProps> = ({ isOpen, onClose, rec
                   <span className="text-[#84cc16] font-bold">{rec.filename}</span>
                   <span>{rec.timestamp}</span>
                 </div>
-                <div className="text-xs text-[#f59e0b] font-bold flex items-center gap-2">
+                <div className="text-xs text-[#f59e0b] font-bold flex flex-wrap items-center gap-2">
                   <span>PRESET: {rec.preset}</span>
                   <span className="text-[#a89f91]">|</span>
                   <span className="text-[#a89f91]">MODEL: {rec.model}</span>
+                  {rec.enrichmentSource && (
+                    <>
+                      <span className="text-[#a89f91]">|</span>
+                      <span className="text-[#84cc16] bg-[#1a2215] px-1.5 py-0.5 rounded border border-[#2f3d26]">
+                        {rec.enrichmentSource.toUpperCase()}: "{rec.enrichmentQuery}" ({rec.enrichmentSnippets?.length || 1} snippets)
+                      </span>
+                    </>
+                  )}
                 </div>
                 <p className="text-xs text-[#ece7dc] leading-relaxed select-all">
                   {rec.positivePrompt}

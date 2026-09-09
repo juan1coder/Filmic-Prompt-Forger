@@ -51,6 +51,11 @@ export interface SavedRecord {
   positivePrompt: string;
   negativePrompt: string;
   rawGrepContent: string;
+  enrichmentSource?: string;
+  enrichmentQuery?: string;
+  enrichmentSnippets?: string[];
+  recipeIngredients?: RecipeIngredient[];
+  recipeSearchTerms?: string[];
 }
 
 export interface NativeModelOption {
@@ -73,5 +78,56 @@ export interface PromptHistoryItem {
   enhancementLevel?: number;
   presetName?: string;
   sourceIdea?: string;
+  enrichmentSource?: 'Wikipedia' | 'Web Search' | 'Google Search';
+  enrichmentQuery?: string;
+  enrichmentSnippets?: string[];
+  recipeIngredients?: RecipeIngredient[];
+  recipeSearchTerms?: string[];
+}
+
+export interface WebGroundingSource {
+  title: string;
+  uri: string;
+}
+
+export interface CuratedSnippet {
+  text: string;
+  category?: string; // 'Texture & Material' | 'Color & Lighting' | 'Iconography & Subject' | 'Atmosphere & Tone' | 'Historical & Cultural';
+  worthyReason?: string;
+  sourceUri?: string;
+  sourceTitle?: string;
+}
+
+export interface RecipeIngredient {
+  id: string;
+  searchTerm: string;
+  source: 'Google Search' | 'Wikipedia' | 'Web Search';
+  snippet: string;
+  category?: string;
+  worthyReason?: string;
+  timestamp: string;
+}
+
+export interface EnrichmentSnippet {
+  id: string;
+  text: string;
+  source: 'Wikipedia' | 'Web Search' | 'Google Search';
+  query: string;
+  title?: string;
+  category?: string;
+}
+
+export interface SearchLogEntry {
+  id: string;
+  timestamp: string;
+  timeStr: string;
+  query: string;
+  source: 'Wikipedia' | 'Web Search' | 'Google Search';
+  snippets: string[];
+  curatedSnippets?: CuratedSnippet[];
+  injectedSnippets: string[];
+  groundingSources?: WebGroundingSource[];
+  searchQueries?: string[];
+  finalPromptUpdated?: boolean;
 }
 

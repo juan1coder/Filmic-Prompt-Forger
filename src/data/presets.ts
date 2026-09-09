@@ -10,16 +10,16 @@ export const NATIVE_GEMINI_MODELS: NativeModelOption[] = [
   },
   {
     id: 'gemini-3.6-flash',
-    name: 'Gemini 3.6 Flash (Fallback)',
+    name: 'Gemini 3.6 Flash',
     badge: 'FALLBACK',
     description: 'High-availability low-latency fallback engine when traffic spikes or rates limit.',
     isFallback: true,
   },
   {
     id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro',
-    badge: 'PRO REASONING',
-    description: 'Deep multi-layered prompt synthesis for complex scenes, intricate physics, and lore.',
+    name: 'Gemini 3.1 Pro (Explicit Only)',
+    badge: 'PAID TIER',
+    description: 'Deep multi-layered prompt synthesis for complex scenes. Requires a paid API key.',
     isComplex: true,
   }
 ];
